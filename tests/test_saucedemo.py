@@ -1,85 +1,80 @@
 import pytest
-import sys
-import os
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
-# Esto ayuda a que Python encuentre nuestra carpeta 'utils'
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils.driver_setup import get_driver
+from pages.cart_page import CartPage
+from pages.checkout_page import CheckoutPage
+from pages.inventory_page import InventoryPage
+from pages.login_page import LoginPage
+from utils.file_reader import load_json
 
-# Configuración inicial y final para cada test (abre y cierra el navegador)
+USERS = load_json("users.json")
+VALID_USER = USERS["valid_user"]
+INVALID_USER = USERS["invalid_user"]
+LOCKED_USER = USERS["locked_user"]
+
+
 @pytest.fixture
-def driver():
-    driver = get_driver()
-    yield driver
-    driver.quit()
+def logged_driver(driver):
+    login_page = LoginPage(driver)
+    login_page.open()
+    login_page.login(VALID_USER["username"], VALID_USER["password"])
+    return driver
 
-# --- CASO 1: LOGIN EXITOSO ---
-def test_login_exitoso(driver):
-    driver.get("https://www.saucedemo.com/")
-    
-    driver.find_element(By.ID, "user-name").send_keys("standard_user")
-    driver.find_element(By.ID, "password").send_keys("secret_sauce")
-    driver.find_element(By.ID, "login-button").click()
-    
-    # Espera explícita y validación de URL
-    wait = WebDriverWait(driver, 5)
-    wait.until(EC.url_contains("/inventory.html"))
-    
-    assert "inventory.html" in driver.current_url
-    
-    # Validar textos importantes
-    titulo_sitio = driver.find_element(By.CLASS_NAME, "app_logo").text
-    titulo_seccion = driver.find_element(By.CLASS_NAME, "title").text
-    assert titulo_sitio == "Swag Labs"
-    assert titulo_seccion == "Products"
 
-# --- CASO 2: CATÁLOGO ---
-def test_verificacion_catalogo(driver):
-    # Login rápido
-    driver.get("https://www.saucedemo.com/")
-    driver.find_element(By.ID, "user-name").send_keys("standard_user")
-    driver.find_element(By.ID, "password").send_keys("secret_sauce")
-    driver.find_element(By.ID, "login-button").click()
-    
-    # Validar título de pestaña
-    assert driver.title == "Swag Labs"
-    
-    # Validar menú y filtros presentes
-    assert driver.find_element(By.ID, "react-burger-menu-btn").is_displayed()
-    assert driver.find_element(By.CLASS_NAME, "product_sort_container").is_displayed()
-    
-    # Validar que hay productos y obtener el primero
-    productos = driver.find_elements(By.CLASS_NAME, "inventory_item")
-    assert len(productos) > 0 
-    
-    primer_nombre = productos[0].find_element(By.CLASS_NAME, "inventory_item_name").text
-    primer_precio = productos[0].find_element(By.CLASS_NAME, "inventory_item_price").text
-    print(f"\n[INFO] Primer producto: {primer_nombre} - Precio: {primer_precio}")
+def test_login_success(driver):
+    login_page = LoginPage(driver)
+    login_page.open()
+    login_page.login(VALID_USER["username"], VALID_USER["password"])
 
-# --- CASO 3: CARRITO ---
-def test_interaccion_carrito(driver):
-    # Login rápido
-    driver.get("https://www.saucedemo.com/")
-    driver.find_element(By.ID, "user-name").send_keys("standard_user")
-    driver.find_element(By.ID, "password").send_keys("secret_sauce")
-    driver.find_element(By.ID, "login-button").click()
-    
-    # Agregar el primer producto (Mochila)
-    driver.find_element(By.ID, "add-to-cart-sauce-labs-backpack").click()
-    
-    # Verificar contador en 1
-    contador = driver.find_element(By.CLASS_NAME, "shopping_cart_badge").text
-    assert contador == "1"
-    
-    # Ir al carrito
-    driver.find_element(By.CLASS_NAME, "shopping_cart_link").click()
-    
-    # Comprobar que el producto está en el carrito
-    items_carrito = driver.find_elements(By.CLASS_NAME, "cart_item")
-    assert len(items_carrito) == 1
-    
-    nombre_en_carrito = driver.find_element(By.CLASS_NAME, "inventory_item_name").text
-    assert nombre_en_carrito == "Sauce Labs Backpack"
+    inventory_page = InventoryPage(driver)
+    assert inventory_page.is_on_inventory_page()
+    assert inventory_page.get_page_title_text() == "Products"
+
+
+def test_login_invalid_credentials(driver):
+    login_page = LoginPage(driver)
+    login_page.open()
+    login_page.login(INVALID_USER["username"], INVALID_USER["password"])
+
+    assert login_page.is_error_visible()
+    assert "Username and password do not match" in login_page.get_error_message()
+
+
+def test_login_locked_user(driver):
+    login_page = LoginPage(driver)
+    login_page.open()
+    login_page.login(LOCKED_USER["username"], LOCKED_USER["password"])
+
+    assert login_page.is_error_visible()
+    assert "locked out" in login_page.get_error_message().lower()
+
+
+def test_inventory_has_products(logged_driver):
+    inventory_page = InventoryPage(logged_driver)
+
+    assert inventory_page.is_menu_visible()
+    assert inventory_page.is_sort_dropdown_visible()
+    assert inventory_page.get_products_count() > 0
+    assert "Sauce Labs Backpack" in inventory_page.get_first_product_name()
+
+
+def test_add_product_to_cart(logged_driver):
+    inventory_page = InventoryPage(logged_driver)
+    inventory_page.add_first_product_to_cart()
+
+    assert inventory_page.get_cart_badge_value() == "1"
+
+
+def test_complete_checkout(logged_driver):
+    inventory_page = InventoryPage(logged_driver)
+    inventory_page.add_first_product_to_cart()
+    inventory_page.go_to_cart()
+
+    cart_page = CartPage(logged_driver)
+    assert cart_page.get_cart_items_count() == 1
+    cart_page.proceed_to_checkout()
+
+    checkout_page = CheckoutPage(logged_driver)
+    checkout_page.fill_customer_info("Federico", "Maciel", "1234")
+    checkout_page.finish_checkout()
+
+    assert checkout_page.get_completion_message() == "Thank you for your order!"
